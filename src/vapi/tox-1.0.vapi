@@ -38,39 +38,6 @@ namespace Tox {
   [CCode (cprefix = "TOX_")]
   public const int ENABLE_IPV6_DEFAULT;
 
-  [CCode (cname = "tox_IP4", destroy_function = "", has_type_id = false)]
-  [SimpleType]
-  public struct IP4 {
-    uint8  c[4];
-    uint16 s[2];
-    uint32 i;
-  }
-
-  [CCode (destroy_function = "", has_type_id = false)]
-  [SimpleType]
-  public struct IP6 {
-    uint8  uint8[16];
-    uint16 uint16[8];
-    uint32 uint32[4];
-  }
-
-  [CCode (destroy_function = "", has_type_id = false)]
-  [SimpleType]
-  public struct IP {
-    uint family;
-    IP4 ip4;
-    IP6 ip6;
-  }
-
-  /* will replace IP_Port as soon as the complete infrastructure is in place
-   * removed the unused union and padding also */
-  [CCode (cname = "tox_IP_Port", destroy_function = "", has_type_id = false)]
-  [SimpleType]
-  public struct IPPort {
-    IP     ip;
-    uint16 port;
-  }
-
   /* Errors for m_addfriend
    * FAERR - Friend Add Error
    */
@@ -597,14 +564,6 @@ namespace Tox {
     /***************END OF FILE SENDING FUNCTIONS******************/
 
 
-    /*
-     * Use these two functions to bootstrap the client.
-     */
-    /* Sends a "get nodes" request to the given node with ip, port and public_key
-     *   to setup connections
-     */
-    public void bootstrap_from_ip(IPPort ip_port, [CCode(array_length=false)] uint8[] public_key);
-
     /* Resolves address into an IP address. If successful, sends a "get nodes"
      *   request to the given node with ip, port and public_key to setup connections
      *
@@ -735,34 +694,50 @@ namespace Vpx {
 [CCode (cheader_filename = "tox/toxav.h", cprefix = "")]
 namespace ToxAV {
 
+  public const int RTP_PAYLOAD_SIZE;
+
   /* Number of audio channels. */
-  [CCode (cprefix = "")]
   public const int AUDIO_CHANNELS;
 
+  /* Audio frame duration in miliseconds */
+  public const int AUDIO_FRAME_DURATION;
+
+  /* Audio sample rate recommended to be 48kHz for Opus */
+  public const int AUDIO_SAMPLE_RATE;
+
   /* The amount of samples in one audio frame */
-  [CCode (cprefix = "")]
   public const int AUDIO_FRAME_SIZE;
 
   /**
    * @brief Callbacks ids that handle the call states.
    */
-  [CCode (cname = "ToxAvCallbackID", cprefix = "av_", has_type_id = false)]
+  [CCode (cname = "ToxAvCallbackID", cprefix = "av_On", has_type_id = false)]
   public enum CallbackID {
     /* Requests */
-    OnInvite,
-    OnStart,
-    OnCancel,
-    OnReject,
-    OnEnd,
+    [CCode (cname = "av_OnInvite")]
+    INVITE,
+    [CCode (cname = "av_OnStart")]
+    START,
+    [CCode (cname = "av_OnCancel")]
+    CANCEL,
+    [CCode (cname = "av_OnReject")]
+    REJECT,
+    [CCode (cname = "av_OnEnd")]
+    END,
 
     /* Responses */
-    OnRinging,
-    OnStarting,
-    OnEnding,
+    [CCode (cname = "av_OnRinging")]
+    RINGING,
+    [CCode (cname = "av_OnStarting")]
+    STARTING,
+    [CCode (cname = "av_OnEnding")]
+    ENDING,
 
     /* Protocol */
-    OnError,
-    OnRequestTimeout
+    [CCode (cname = "av_OnError")]
+    ERROR,
+    [CCode (cname = "av_OnRequestTimeout")]
+    REQUEST_TIMEOUT
   }
 
   /**
@@ -770,8 +745,10 @@ namespace ToxAV {
    */
   [CCode (cname = "ToxAvCallType", cprefix = "Type", has_type_id = false)]
   public enum CallType {
-    Audio,
-    Video
+    [CCode (cname = "TypeAudio")]
+    AUDIO,
+    [CCode (cname = "TypeVideo")]
+    VIDEO
   }
 
   /**
@@ -780,19 +757,62 @@ namespace ToxAV {
    */
   [CCode (cname = "ToxAvError", cprefix = "Error", has_type_id = false)]
   public enum AV_Error {
-    None,
-    Internal,
-    AlreadyInCall,
-    NoCall,
-    InvalidState,
-    NoRtpSession,
-    AudioPacketLost,
-    StartingAudioRtp,
-    StartingVideoRtp,
-    NoTransmission,
-    TerminatingAudioRtp,
-    TerminatingVideoRtp
+    [CCode (cname = "ErrorNone")]
+    NONE,
+    [CCode (cname = "ErrorInternal")]
+    INTERNAL,
+    [CCode (cname = "ErrorAlreadyInCall")]
+    ALREADY_IN_CALL,
+    [CCode (cname = "ErrorNoCall")]
+    NO_CALL,
+    [CCode (cname = "ErrorInvalidState")]
+    INVALID_STATE,
+    [CCode (cname = "ErrorNoRtpSession")]
+    NO_RTP_SESSION,
+    [CCode (cname = "ErrorAudioPacketLost")]
+    AUDIO_PACKET_LOST,
+    [CCode (cname = "ErrorStartingAudioRtp")]
+    STARTING_AUDIO_RTP,
+    [CCode (cname = "ErrorStartingVideoRtp")]
+    STARTING_VIDEO_RTP,
+    [CCode (cname = "ErrorNoTransmission")]
+    NO_TRANSMISSION,
+    [CCode (cname = "ErrorTerminatingAudioRtp")]
+    TERMINATING_AUDIO_RTP,
+    [CCode (cname = "ErrorTerminatingVideoRtp")]
+    TERMINATING_VIDEO_RTP
   }
+
+  /**
+   * @brief Locally supported capabilities.
+   */
+  [Flags]
+  [CCode (cname = "ToxAvCapabilities", cprefix = "", has_type_id = false)]
+  public enum Capabilities {
+    [CCode (cname = "None")]
+    NONE,
+    [CCode (cname = "AudioEnconding")]
+    AUDIO_ENCODING,
+    [CCode (cname = "AudioDecoding")]
+    AUDIO_DECODING,
+    [CCode (cname = "VideoEncoding")]
+    VIDEO_ENCODING,
+    [CCode (cname = "VideoDecoding")]
+    VIDEO_DECODING
+  }
+
+  /**
+   * @brief Register callback for call state.
+   *
+   * @param callback The callback
+   * @param id One of the ToxAvCallbackID values
+   * @return void
+   */
+  //FIXME return value?
+  [CCode (cname = "ToxAVCallback", has_type_id = false)]
+  public delegate void CallstateCallback ();
+  [CCode (cname = "toxav_register_callstate_callback")]
+  public static void register_callstate_callback ([CCode (delegate_target_pos = 2.1)]CallstateCallback callback, CallbackID id);
 
   [CCode (cname = "ToxAv", free_function = "toxav_kill", cprefix = "toxav_", has_type_id = false)]
   [Compact]
@@ -819,17 +839,6 @@ namespace ToxAV {
     // * @return void
     // */
     //void toxav_kill(ToxAv *av);
-
-    /**
-     * @brief Register callback for call state.
-     *
-     * @param callback The callback
-     * @param id One of the ToxAvCallbackID values
-     * @return void
-     */
-    [CCode (cname = "ToxAVCallback", has_type_id = false)]
-    public delegate int Callback ();
-    public static void register_callstate_callback (Callback callback, CallbackID id);
 
     /**
      * @brief Call user. Use its friend_id.
@@ -986,60 +995,14 @@ namespace ToxAV {
     public AV_Error get_peer_id ( int peer );
 
     /**
-     * @brief Get reference to an object that is handling av session.
-     *
-     * @param av Handler.
-     * @return void*
-     */
-    //public void *get_agent_handler ();
-
-    /**
-     * @brief Is video encoding supported
+     * @brief Is certain capability supported
      * 
      * @param av Handler
      * @return int
      * @retval 1 Yes.
      * @retval 0 No.
      */
-    public int video_encoding {
-      [CCode (cname = "toxav_video_encoding")] get;
-    }
-
-    /**
-     * @brief Is video decoding supported
-     * 
-     * @param av Handler
-     * @return int
-     * @retval 1 Yes.
-     * @retval 0 No.
-     */
-    public int video_decoding {
-      [CCode (cname = "toxav_video_decoding")] get;
-    }
-
-    /**
-     * @brief Is audio encoding supported
-     * 
-     * @param av Handler
-     * @return int
-     * @retval 1 Yes.
-     * @retval 0 No.
-     */
-    public int audio_encoding {
-      [CCode (cname = "toxav_audio_encoding")] get;
-    }
-
-    /**
-     * @brief Is audio decoding supported
-     * 
-     * @param av Handler
-     * @return int
-     * @retval 1 Yes.
-     * @retval 0 No.
-     */
-    public int audio_decoding {
-      [CCode (cname = "toxav_audio_decoding")] get;
-    }
+    public int capability_supported ( Capabilities capability );
 
     /**
      * @brief Get messenger handle
