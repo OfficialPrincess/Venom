@@ -25,6 +25,10 @@ namespace Venom {
       get { return entry_contact_id.text; }
       set { entry_contact_id.text = value; }
     }
+    public string contact_alias {
+      get { return entry_contact_alias.text; }
+      set { entry_contact_alias.text = value; }
+    }
     public string message {
       owned get { return textview_contact_message.buffer.text; }
       set { textview_contact_message.buffer.text = value; }
@@ -32,7 +36,9 @@ namespace Venom {
     public int max_message_length { get; set; default = -1;}
 
     private Gtk.Entry entry_contact_id;
+    private Gtk.Entry entry_contact_alias;
     private Gtk.TextView textview_contact_message;
+
     private GLib.Regex id_regex;
 
     public AddContactDialog() {
@@ -44,16 +50,17 @@ namespace Venom {
       try {
         builder.add_from_resource("/org/gtk/venom/add_contact_dialog.ui");
       } catch (GLib.Error e) {
-        stderr.printf("Loading add contact window failed!\n");
+        Logger.log(LogLevel.FATAL, "Loading add contact window failed: " + e.message);
       }
 
       Gtk.Box box = builder.get_object("box") as Gtk.Box;
       this.get_content_area().add(box);
 
       entry_contact_id = builder.get_object("entry_contact_id") as Gtk.Entry;
+      entry_contact_alias = builder.get_object("entry_contact_name") as Gtk.Entry;
       textview_contact_message = builder.get_object("textview_contact_message") as Gtk.TextView;
-
       entry_contact_id.changed.connect(on_entry_changed);
+
       on_entry_changed();
 
       textview_contact_message.buffer.insert_text.connect(on_insert_text);
@@ -61,12 +68,12 @@ namespace Venom {
       try {
         id_regex = new GLib.Regex("^[[:xdigit:]]*$");
       } catch (RegexError re) {
-        stderr.printf("Failed to compile regex: %s\n", re.message);
+        Logger.log(LogLevel.FATAL, "Failed to compile regex:" + re.message);
       }
 
       this.add_buttons("_Cancel", Gtk.ResponseType.CANCEL, "_Ok", Gtk.ResponseType.OK, null);
       this.set_default_response(Gtk.ResponseType.OK);
-      this.title = "Add contact";
+      this.title = _("Add contact");
       this.set_default_size(400, 250);
     }
 
@@ -80,16 +87,18 @@ namespace Venom {
 
     private void on_entry_changed() {
       if(id == null || id == "") {
-        entry_contact_id.secondary_icon_tooltip_text = "No ID given";
-        entry_contact_id.secondary_icon_name = "dialog-warning";
+        entry_contact_id.secondary_icon_tooltip_text = _("No ID given");
+        entry_contact_id.secondary_icon_name = "emblem-important-symbolic";
       } else {
         string stripped_id = Tools.remove_whitespace(id);
-        if (stripped_id.length != Tox.FRIEND_ADDRESS_SIZE*2) {
-          entry_contact_id.secondary_icon_tooltip_text = "ID of invalid size";
-          entry_contact_id.secondary_icon_name = "dialog-warning";
-        } else if (id_regex != null && !id_regex.match(stripped_id)) {
-          entry_contact_id.secondary_icon_tooltip_text = "ID contains invalid characters";
-          entry_contact_id.secondary_icon_name = "dialog-warning";
+        if (stripped_id.length == Tox.FRIEND_ADDRESS_SIZE * 2) {
+          if (id_regex != null && !id_regex.match(stripped_id)) {
+            entry_contact_id.secondary_icon_tooltip_text = _("ID contains invalid characters");
+            entry_contact_id.secondary_icon_name = "emblem-important-symbolic";
+          } else {
+            entry_contact_id.secondary_icon_name = "emblem-ok-symbolic";
+            entry_contact_id.secondary_icon_tooltip_text = _("Valid ID size");
+          }
         } else {
           entry_contact_id.secondary_icon_pixbuf = null;
         }

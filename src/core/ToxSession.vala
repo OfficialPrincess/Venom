@@ -28,13 +28,13 @@ namespace Venom {
     public string to_string() {
       switch (this) {
         case ONLINE:
-          return "Online";
+          return _("Online");
         case AWAY:
-          return "Away";
+          return _("Away");
         case BUSY:
-          return "Busy";
+          return _("Busy");
         case OFFLINE:
-          return "Offline";
+          return _("Offline");
         default:
           assert_not_reached();
       }
@@ -44,11 +44,14 @@ namespace Venom {
   // Wrapper class for accessing tox functions threadsafe
   public class ToxSession : Object {
     private Tox.Tox handle;
-    private ILocalStorage local_storage;
+    private IMessageLog message_log;
+    private IContactStorage contact_storage;
+    private IDhtNodeStorage dht_node_storage;
+    private Sqlite.Database db;
+
     private DhtNode[] dht_nodes = {};
     private GLib.HashTable<int, Contact> _contacts = new GLib.HashTable<int, Contact>(null, null);
     private GLib.HashTable<int, GroupChat> _groups = new GLib.HashTable<int, GroupChat>(null, null);
-    private GLib.HashTable<uint8, FileTransfer> _file_transfers = new GLib.HashTable<uint8, FileTransfer>(null, null);
     private Thread<int> session_thread = null;
     private bool bootstrapped = false;
     private bool ipv6 = false;
@@ -87,15 +90,64 @@ namespace Venom {
     public ToxSession( bool ipv6 = false ) {
       this.ipv6 = ipv6;
 
+      Tox.Options options = Tox.Options();
+
+      string[] proxy_strings = {};
+      ProxyResolver proxy_resolver = ProxyResolver.get_default();
+      try {
+        proxy_strings = proxy_resolver.lookup("socks://tox.im");
+      } catch (Error e) {
+        Logger.log(LogLevel.ERROR, "Error when looking up proxy settings");
+      }
+
+      Regex proxy_regex = null;
+      try {
+         proxy_regex = new GLib.Regex("^(?P<protocol>socks5)://((?P<user>[^:]*)(:(?P<password>.*))?@)?(?P<host>.*):(?P<port>.*)");
+      } catch (GLib.Error e) {
+        Logger.log(LogLevel.FATAL, "Error creating tox uri regex: " + e.message);
+      }
+
+      foreach(unowned string proxy in proxy_strings) {
+        if(proxy.has_prefix("socks5:")) {
+          Logger.log(LogLevel.INFO, "socks5 proxy found: " + proxy);
+          GLib.MatchInfo info = null;
+          if(proxy_regex != null && proxy_regex.match(proxy, 0, out info)) {
+            string proxy_host = info.fetch_named("host");
+            string proxy_port = info.fetch_named("port");
+            options.proxy_enabled = 1;
+            options.udp_disabled = 1;
+            Memory.copy(*(&options.proxy_address), proxy_host.data, int.min(proxy_host.length, options.proxy_address.length));
+            options.proxy_port = (uint16)int.parse(proxy_port);
+            break;
+          } else {
+            Logger.log(LogLevel.INFO, "socks5 proxy does not match regex");
+          }
+        }
+      }
+
+      options.ipv6enabled = ipv6 ? 1 : 0;
+
       // create handle
-      handle = new Tox.Tox( ipv6 ? 1 : 0);
+      handle = new Tox.Tox(options);
 
       //start local storage
-      if(Settings.instance.enable_logging) {
-        local_storage = new LocalStorage();
-        local_storage.connect_to(this);
-      } else {
-        local_storage = new DummyStorage();
+      try {
+        SqliteTools.open_db(ResourceFactory.instance.db_filename, out db);
+
+        if(Settings.instance.enable_logging) {
+          message_log = new SqliteMessageLog(db);
+          message_log.connect_to(this);
+        } else {
+          message_log = new DummyMessageLog();
+        }
+        contact_storage = new SqliteContactStorage(db);
+        dht_node_storage = new DummyDhtNodeStorage();
+        //unfinished, so replaced with dummy storage
+        //dht_node_storage = new SqliteDhtNodeStorage(db);
+      } catch (Error e) {
+        Logger.log(LogLevel.ERROR, "Error opening database: " + e.message);
+        message_log = new DummyMessageLog();
+        dht_node_storage = new DummyDhtNodeStorage();
       }
 
       init_dht_nodes();
@@ -108,22 +160,11 @@ namespace Venom {
     }
 
     private void init_dht_nodes() {
-      dht_nodes += new DhtNode.ipv4(
-        "192.254.75.98",
-        "FE3914F4616E227F29B2103450D6B55A836AD4BD23F97144E2C4ABE8D504FE1B"
-      );
-      dht_nodes += new DhtNode.ipv6(
-        "2607:5600:284::2",
-        "FE3914F4616E227F29B2103450D6B55A836AD4BD23F97144E2C4ABE8D504FE1B"
-      );
-      dht_nodes += new DhtNode.ipv4(
-        "66.175.223.88",
-        "B24E2FB924AE66D023FE1E42A2EE3B432010206F751A2FFD3E297383ACF1572E"
-      );
-      dht_nodes += new DhtNode.ipv4(
-        "192.210.149.121",
-        "F404ABAA1C99A9D37D61AB54898F56793E1DEF8BD46B1038B9D822E8460FAB67"
-      );
+      dht_nodes = dht_node_storage.get_dht_nodes();
+      if(dht_nodes.length == 0) {
+        DummyDhtNodeStorage dummy_storage = new DummyDhtNodeStorage();
+        dht_nodes = dummy_storage.get_dht_nodes();
+      }
     }
 
     private void init_callbacks() {
@@ -173,6 +214,7 @@ namespace Venom {
         if(last_seen > 0) {
           c.last_seen = new DateTime.from_unix_local((int64)last_seen);
         }
+        contact_storage.load_contact_data(c);
         _contacts.set(friend_id, c);
       };
     }
@@ -182,89 +224,146 @@ namespace Venom {
       requires (public_key != null)
       requires (data != null)
     {
-      string message = ((string)data).dup();
-      uint8[] public_key_clone = Tools.clone(public_key, Tox.CLIENT_ID_SIZE);
-      Contact contact = new Contact(public_key_clone, -1);
-      Idle.add(() => { on_friend_request(contact, message); return false; });
+      string message = Tools.uint8_to_nullterm_string(data);
+      uint8[] public_key_clone = new uint8[Tox.CLIENT_ID_SIZE];
+      Memory.copy(public_key_clone, public_key, Tox.CLIENT_ID_SIZE);
+      Idle.add(() => {
+        Contact contact = new Contact(public_key_clone, -1);
+        on_friend_request(contact, message);
+        return false;
+      });
     }
 
     private void on_friend_message_callback(Tox.Tox tox, int friend_number, uint8[] message)
       requires(message != null)
     {
-      string message_string = ((string)message).dup();
-      Idle.add(() => { on_friend_message(_contacts.get(friend_number), message_string); return false; });
+      string message_string = Tools.uint8_to_nullterm_string(message);
+      Idle.add(() => {
+        on_friend_message(_contacts.get(friend_number), message_string);
+        return false;
+      });
     }
 
     private void on_friend_action_callback(Tox.Tox tox, int32 friend_number, uint8[] action)
       requires(action != null)
     {
-      string action_string = ((string)action).dup();
-      Idle.add(() => { on_friend_action(_contacts.get(friend_number), action_string); return false; });
+      string action_string = Tools.uint8_to_nullterm_string(action);
+      Idle.add(() => {
+        on_friend_action(_contacts.get(friend_number), action_string);
+        return false;
+      });
     }
 
     private void on_name_change_callback(Tox.Tox tox, int32 friend_number, uint8[] new_name)
       requires(new_name != null)
     {
-      Contact contact = _contacts.get(friend_number);
-      string old_name = contact.name;
-      contact.name = ((string)new_name).dup();
-      Idle.add(() => { on_name_change(contact, old_name); return false; });
+      string new_name_dup = Tools.uint8_to_nullterm_string(new_name);
+      Idle.add(() => {
+        Contact contact = _contacts.get(friend_number);
+        string old_name = contact.name;
+        contact.name = new_name_dup;
+        on_name_change(contact, old_name);
+        return false;
+      });
     }
 
     private void on_status_message_callback(Tox.Tox tox, int32 friend_number, uint8[] status)
       requires(status != null)
     {
-      Contact contact = _contacts.get(friend_number);
-      string old_status = contact.status_message;
-      contact.status_message = ((string)status).dup();
-      Idle.add(() => { on_status_message(contact, old_status); return false; });
+      string status_dup = Tools.uint8_to_nullterm_string(status);
+      Idle.add(() => {
+        Contact contact = _contacts.get(friend_number);
+        string old_status = contact.status_message;
+        contact.status_message = status_dup;
+        on_status_message(contact, old_status);
+        return false;
+      });
     }
 
     private void on_user_status_callback(Tox.Tox tox, int32 friend_number, uint8 user_status) {
-      Contact contact = _contacts.get(friend_number);
-      uint8 old_status = contact.user_status;
-      contact.user_status = user_status;
-      Idle.add(() => { on_user_status(contact, old_status); return false; });
+      Idle.add(() => {
+        Contact contact = _contacts.get(friend_number);
+        uint8 old_status = contact.user_status;
+        contact.user_status = user_status;
+        on_user_status(contact, old_status);
+        return false;
+      });
     }
 
     private void on_read_receipt_callback(Tox.Tox tox, int32 friend_number, uint32 receipt) {
-      Idle.add(() => { on_read_receipt(_contacts.get(friend_number), receipt); return false; });
+      Idle.add(() => {
+        on_read_receipt(_contacts.get(friend_number), receipt);
+        return false;
+      });
     }
 
     private void on_connection_status_callback(Tox.Tox tox, int32 friend_number, uint8 status) {
-      Contact contact = _contacts.get(friend_number);
-      contact.online = (status != 0);
-      contact.last_seen = new DateTime.now_local();
-      Idle.add(() => { on_connection_status(contact); return false; });
+      Idle.add(() => { 
+        Contact contact = _contacts.get(friend_number);
+        contact.online = (status != 0);
+        contact.last_seen = new DateTime.now_local();
+
+        if(status == 0) {
+          contact.get_filetransfers().for_each((id, ft) => {
+              if(ft.status == FileTransferStatus.PENDING || ft.status == FileTransferStatus.IN_PROGRESS || ft.status == FileTransferStatus.PAUSED) {
+                ft.status = (ft.direction == FileTransferDirection.INCOMING) ? FileTransferStatus.RECEIVING_BROKEN : FileTransferStatus.SENDING_BROKEN;
+              }
+            });
+        } else {
+          contact.get_filetransfers().for_each((id, ft) => {
+              if(ft.status == FileTransferStatus.RECEIVING_BROKEN) {
+                lock(handle) {
+                  uint64[] data = {ft.bytes_processed};
+                  handle.file_send_control(friend_number, 1, id, Tox.FileControlStatus.RESUME_BROKEN, (uint8[])data);
+                }
+              }
+            });
+        }
+
+        on_connection_status(contact);
+        return false;
+      });
     }
 
-    private void on_typing_change_callback(Tox.Tox tox, int32 friend_number, int is_typing) {
+    private void on_typing_change_callback(Tox.Tox tox, int32 friend_number, uint8 is_typing) {
       Contact contact = _contacts.get(friend_number);
       contact.is_typing = is_typing != 0;
-      Idle.add(() => { on_typing_change(contact, is_typing != 0); return false;});
+      Idle.add(() => {
+        on_typing_change(contact, is_typing != 0);
+        return false;
+      });
     }
 
     // Group chat callbacks
     private void on_group_invite_callback(Tox.Tox tox, int32 friendnumber, uint8[] group_public_key)
       requires(group_public_key != null)
     {
-      uint8[] public_key_clone = Tools.clone(group_public_key, Tox.CLIENT_ID_SIZE);
-      GroupChat group_contact = new GroupChat(public_key_clone);
-      Idle.add(() => { on_group_invite(_contacts.get(friendnumber), group_contact); return false; });
+      uint8[] group_public_key_clone = new uint8[Tox.CLIENT_ID_SIZE];
+      Memory.copy(group_public_key_clone, group_public_key, Tox.CLIENT_ID_SIZE);
+      Idle.add(() => {
+        on_group_invite(_contacts.get(friendnumber), new GroupChat(group_public_key_clone));
+        return false;
+      });
     }
 
     private void on_group_message_callback(Tox.Tox tox, int groupnumber, int friendgroupnumber, uint8[] message)
       requires(message != null)
     {
-      string message_string = ((string)message).dup();
-      Idle.add(() => { on_group_message(_groups.get(groupnumber), friendgroupnumber, message_string); return false; });
+      string message_string = Tools.uint8_to_nullterm_string(message);
+      Idle.add(() => {
+        on_group_message(_groups.get(groupnumber), friendgroupnumber, message_string);
+        return false;
+      });
     }
 
     private void on_group_action_callback(Tox.Tox tox, int groupnumber, int friendgroupnumber, uint8[] action)
       requires(action != null)
     {
-      string action_string = ((string)action).dup();
-      Idle.add(() => { on_group_action(_groups.get(groupnumber), friendgroupnumber, action_string); return false; });
+      string action_string = Tools.uint8_to_nullterm_string(action);
+      Idle.add(() => {
+        on_group_action(_groups.get(groupnumber), friendgroupnumber, action_string);
+        return false;
+      });
     }
 
     private void on_group_namelist_change_callback(Tox.Tox tox, int groupnumber, int peernumber, Tox.ChatChange change) {
@@ -277,7 +376,7 @@ namespace Venom {
       } else {
         chat_change_string = "NAME";
       }
-      stdout.printf("[gnc] <%s> [%i] #%i\n", chat_change_string, peernumber, groupnumber);
+      stdout.printf(_("[gnc] <%s> [%i] #%i\n"), chat_change_string, peernumber, groupnumber);
 */
       Idle.add(() => {
         GroupChat g = _groups.get(groupnumber);
@@ -287,7 +386,7 @@ namespace Venom {
           g.peer_count++;
         } else if (change == Tox.ChatChange.PEER_DEL) {
           if(!g.peers.remove(peernumber)) {
-            stderr.printf("Could not remove peer [%i] from groupchat #%i (no such peer)\n", peernumber, groupnumber);
+            Logger.log(LogLevel.ERROR, "Could not remove peer [%i] from groupchat #%i (no such peer)".printf(peernumber, groupnumber));
           }
           g.peer_count--;
         } else { // change == PEER_NAME
@@ -302,23 +401,45 @@ namespace Venom {
     private void on_file_sendrequest_callback(Tox.Tox tox, int32 friendnumber, uint8 filenumber, uint64 filesize, uint8[] filename)
       requires(filename != null)
     {
-      string filename_str = File.new_for_path((string)filename).get_basename();
-      Idle.add(() => { on_file_sendrequest(friendnumber, filenumber, filesize, filename_str); return false; });
+      string filename_dup = Tools.uint8_to_nullterm_string(filename);
+      Idle.add(() => {
+        string filename_str = File.new_for_path(filename_dup).get_basename();
+        on_file_sendrequest(friendnumber, filenumber, filesize, filename_str);
+        return false;
+      });
     }
 
     private void on_file_control_callback(Tox.Tox tox, int32 friendnumber, uint8 receive_send, uint8 filenumber, uint8 status, uint8[] data) {
-      uint8[] data_clone = Tools.clone(data, data.length);
-      Idle.add(() => { on_file_control(friendnumber, filenumber, receive_send, status, data_clone); return false; });
+      uint8[] data_clone = new uint8[data.length];
+      Memory.copy(data_clone, data, data.length);
+      Idle.add(() => {
+        on_file_control(friendnumber, filenumber, receive_send, status, data_clone);
+        return false;
+      });
     }
 
     private void on_file_data_callback(Tox.Tox tox, int32 friendnumber, uint8 filenumber, uint8[] data)
       requires(data != null)
     {
-      uint8[] data_clone = Tools.clone(data, data.length);
-      Idle.add(() => { on_file_data(friendnumber, filenumber, data_clone); return false; });
+      uint8[] data_clone = new uint8[data.length];
+      Memory.copy(data_clone, data, data.length);
+      Idle.add(() => {
+        on_file_data(friendnumber, filenumber, data_clone);
+        return false;
+      });
     }
 
-    ////////////////////////////// Wrapper functions ////////////////////////////////
+    ////////////////////////// Misc functions //////////////////////////////////
+
+    public void save_extended_contact_data(Contact c) {
+      contact_storage.save_contact_data(c);
+    }
+
+    public void load_extended_contact_data(Contact c) {
+      contact_storage.load_contact_data(c);
+    }
+
+    ///////////////////////// Wrapper functions ////////////////////////////////
 
     // Add a friend, returns Tox.FriendAddError on error and friend_number on success
     public Tox.FriendAddError add_friend(Contact c, string message)
@@ -327,15 +448,16 @@ namespace Venom {
       requires(message != null)
     {
       Tox.FriendAddError ret = Tox.FriendAddError.UNKNOWN;
-      uint8[] data = Tools.string_to_nullterm_uint(message);
 
       lock(handle) {
-        ret = handle.add_friend(c.public_key, data);
+        ret = handle.add_friend(c.public_key, message.data);
       }
 
       if(ret < 0)
         return ret;
-      c.public_key = Tools.clone(c.public_key, Tox.CLIENT_ID_SIZE);
+      uint8[] client_key = new uint8[Tox.CLIENT_ID_SIZE];
+      Memory.copy(client_key, c.public_key, Tox.CLIENT_ID_SIZE);
+      c.public_key = client_key;
       c.friend_id = (int)ret;
       _contacts.set((int)ret, c);
       return ret;
@@ -367,8 +489,9 @@ namespace Venom {
       lock(handle) {
         ret = handle.join_groupchat(c.friend_id, g.public_key);
       }
-      if(ret < 0)
+      if(ret < 0) {
         return false;
+      }
       g.group_id = ret;
       _groups.set(ret, g);
       return true;
@@ -412,16 +535,16 @@ namespace Venom {
       return ret == 0;
     }
 
-    public int invite_friend(int group_id,int friendnumber) {
+    public int invite_friend(Contact c, GroupChat g) {
       lock(handle){
-        return handle.invite_friend(friendnumber,group_id);
+        return handle.invite_friend(c.friend_id, g.group_id);
       }
     }
 
     public string group_peername(GroupChat g, int peernumber)
       requires(g != null)
     {
-      uint8[] buf = new uint8[Tox.MAX_NAME_LENGTH];
+      uint8[] buf = new uint8[Tox.MAX_NAME_LENGTH + 1];
       lock(handle) {
         handle.group_peername(g.group_id, peernumber, buf);
       }
@@ -453,15 +576,14 @@ namespace Venom {
       requires(message != null)
     {
       int ret = -1;
-      uint8[] buf = Tools.string_to_nullterm_uint(message);
       lock(handle) {
-        ret = handle.set_status_message(buf);
+        ret = handle.set_status_message(message.data);
       }
       return ret == 0;
     }
 
     public string get_self_status_message() {
-      uint8[] buf = new uint8[Tox.MAX_STATUSMESSAGE_LENGTH];
+      uint8[] buf = new uint8[Tox.MAX_STATUSMESSAGE_LENGTH + 1];
       int ret = 0;
       lock(handle) {
         ret = handle.get_self_status_message(buf);
@@ -482,16 +604,15 @@ namespace Venom {
     public bool set_name(string name)
       requires(name != null)
     {
-      uint8[] buf = Tools.string_to_nullterm_uint(name);
       int ret = -1;
       lock(handle) {
-        ret = handle.set_name(buf);
+        ret = handle.set_name(name.data);
       }
       return ret == 0;
     }
 
     public string get_self_name() {
-      uint8[] buf = new uint8[Tox.MAX_NAME_LENGTH];
+      uint8[] buf = new uint8[Tox.MAX_NAME_LENGTH + 1];
       int ret = -1;
       lock(handle) {
         ret = handle.get_self_name(buf);
@@ -509,7 +630,7 @@ namespace Venom {
     }
 
     public string? get_name(int friend_number) {
-      uint8[] buf = new uint8[Tox.MAX_NAME_LENGTH];
+      uint8[] buf = new uint8[Tox.MAX_NAME_LENGTH + 1];
       int ret = -1;
       lock(handle) {
         ret = handle.get_name(friend_number, buf);
@@ -523,7 +644,7 @@ namespace Venom {
       uint8 [] buf;
       lock(handle) {
         size = handle.get_status_message_size(friend_number);
-        buf = new uint8[size];
+        buf = new uint8[size + 1];
         ret = handle.get_status_message(friend_number, buf);
       }
       return (string)buf;
@@ -538,36 +659,32 @@ namespace Venom {
     public uint32 send_message(int friend_number, string message)
       requires(message != null)
     {
-      uint8[] buf = Tools.string_to_nullterm_uint(message);
       lock(handle) {
-        return handle.send_message(friend_number, buf);
+        return handle.send_message(friend_number, message.data);
       }
     }
 
     public uint32 send_action(int friend_number, string action)
       requires(action != null)
     {
-      uint8[] buf = Tools.string_to_nullterm_uint(action);
       lock(handle) {
-        return handle.send_action(friend_number, buf);
+        return handle.send_action(friend_number, action.data);
       }
     }
 
     public uint32 group_message_send(int groupnumber, string message)
       requires(message != null)
     {
-      uint8[] buf = Tools.string_to_nullterm_uint(message);
       lock(handle) {
-        return handle.group_message_send(groupnumber, buf);
+        return handle.group_message_send(groupnumber, message.data);
       }
     }
 
     public uint32 group_action_send(int groupnumber, string action)
       requires(action != null)
     {
-      uint8[] buf = Tools.string_to_nullterm_uint(action);
       lock(handle) {
-        return handle.group_action_send(groupnumber, buf);
+        return handle.group_action_send(groupnumber, action.data);
       }
     }
 
@@ -581,22 +698,27 @@ namespace Venom {
       return _contacts;
     }
 
-    public unowned GLib.HashTable<uint8, FileTransfer> get_filetransfers() {
-      return _file_transfers;
+    public unowned GLib.HashTable<int, GroupChat> get_groupchats() {
+      return _groups;
     }
 
     public uint8 send_file_request(int friend_number, uint64 file_size, string filename)
       requires(filename != null)
     {
-      uint8[] buf = Tools.string_to_nullterm_uint(filename);
       lock(handle) {
-        return (uint8) handle.new_file_sender(friend_number, file_size,buf);
+        return (uint8) handle.new_file_sender(friend_number, file_size, filename.data);
       }
     }
 
     public void accept_file (int friendnumber, uint8 filenumber) {
       lock(handle) {
         handle.file_send_control(friendnumber, 1, filenumber, Tox.FileControlStatus.ACCEPT, null);
+      }
+    }
+
+    public void accept_file_resume (int friendnumber, uint8 filenumber) {
+      lock(handle) {
+        handle.file_send_control(friendnumber, 0, filenumber, Tox.FileControlStatus.ACCEPT, null);
       }
     }
 
@@ -634,20 +756,19 @@ namespace Venom {
 
     // Background thread main function
     private int run() {
-      stdout.printf("Background thread started.\n");
+      Logger.log(LogLevel.INFO, "Background thread started.");
 
       if(!bootstrapped) {
-        stdout.printf("Connecting to DHT Nodes:\n");
+        Logger.log(LogLevel.INFO, "Connecting to DHT Nodes:");
         for(int i = 0; i < dht_nodes.length; ++i) {
           // skip ipv6 nodes if we don't support them
           if(dht_nodes[i].is_ipv6 && !ipv6)
             continue;
-          stdout.printf("  %s\n", dht_nodes[i].to_string());
+          Logger.log(LogLevel.INFO, "  " + dht_nodes[i].to_string());
           lock(handle) {
             handle.bootstrap_from_address(
               dht_nodes[i].host,
-              dht_nodes[i].is_ipv6 ? 1 : 0,
-              dht_nodes[i].port.to_big_endian(),
+              dht_nodes[i].port,
               dht_nodes[i].pub_key
             );
           }
@@ -671,9 +792,9 @@ namespace Venom {
         lock(handle) {
           handle.do();
         }
-        Thread.usleep(25000);
+        Thread.usleep(handle.do_interval() * 1000);
       }
-      stdout.printf("Background thread stopped.\n");
+      Logger.log(LogLevel.INFO, "Background thread stopped.");
       return 0;
     }
 
@@ -705,21 +826,22 @@ namespace Venom {
     {
       File f = File.new_for_path(filename);
       if(!f.query_exists())
-        throw new IOError.NOT_FOUND("File \"" + filename + "\" does not exist.");
+        throw new IOError.NOT_FOUND(_("File \"%d\" does not exist.").printf(filename));
       FileInfo file_info = f.query_info("*", FileQueryInfoFlags.NONE);
       int64 size = file_info.get_size();
       var data_stream = new DataInputStream(f.read());
       uint8[] buf = new uint8 [size];
 
       if(data_stream.read(buf) != size)
-        throw new IOError.FAILED("Error while reading from stream.");
+        throw new IOError.FAILED(_("Error while reading from stream."));
       int ret = -1;
       lock(handle) {
         ret = handle.load(buf);
       }
       if(ret != 0)
-        throw new IOError.FAILED("Error while loading messenger data.");
+        throw new IOError.FAILED(_("Error while loading messenger data."));
       init_contact_list();
+      message_log.myId = Tools.bin_to_hexstring(get_address());
     }
 
     // Save messenger data from file
@@ -744,13 +866,13 @@ namespace Venom {
       assert(size != 0);
 
       if(os.write(buf) != size)
-        throw new IOError.FAILED("Error while writing to stream.");
+        throw new IOError.FAILED(_("Error while writing to stream."));
     }
 
     public GLib.List<Message> load_history_for_contact(Contact c)
       requires(c != null)
     {
-      return local_storage.retrieve_history(c);
+      return message_log.retrieve_history(c);
     }
   }
 }

@@ -30,15 +30,15 @@ namespace Tox {
   [CCode (cprefix = "TOX_")]
   public const int CLIENT_ID_SIZE;
   [CCode (cprefix = "TOX_")]
+  public const int AVATAR_MAX_DATA_LENGTH;
+  [CCode (cprefix = "TOX_")]
+  public const int HASH_LENGTH;
+  [CCode (cprefix = "TOX_")]
   public const int FRIEND_ADDRESS_SIZE;
   [CCode (cprefix = "TOX_")]
-  public const int PORTRANGE_FROM;
-  [CCode (cprefix = "TOX_")]
-  public const int PORTRANGE_TO;
-  [CCode (cprefix = "TOX_")]
-  public const int PORT_DEFAULT;
-  [CCode (cprefix = "TOX_")]
   public const int ENABLE_IPV6_DEFAULT;
+  [CCode (cprefix = "TOX_", array_length_cexpr="TOX_ENC_SAVE_MAGIC_LENGTH")]
+  public const uint8[] ENC_SAVE_MAGIC_NUMBER;
 
   /* Errors for m_addfriend
    * FAERR - Friend Add Error
@@ -66,6 +66,15 @@ namespace Tox {
     INVALID
   }
 
+  /* AVATAR_FORMAT -
+   * Data formats for user avatar images
+   */
+  [CCode (cname = "TOX_AVATAR_FORMAT", cprefix = "TOX_AVATAR_FORMAT_", has_type_id = false)]
+  public enum AvatarFormat {
+      NONE,
+      PNG
+  }
+
   [CCode (cname = "int", cprefix = "TOX_FILECONTROL_", has_type_id = false)]
   public enum FileControlStatus {
     ACCEPT,
@@ -80,6 +89,30 @@ namespace Tox {
     PEER_ADD,
     PEER_DEL,
     PEER_NAME
+  }
+
+  [CCode (cname = "Tox_Options",  destroy_function = "", has_type_id = false)]
+  public struct Options {
+    /*
+    *  The type of UDP socket created depends on ipv6enabled:
+    *  If set to 0 (zero), creates an IPv4 socket which subsequently only allows
+    *    IPv4 communication
+    *  If set to anything else (default), creates an IPv6 socket which allows both IPv4 AND
+    *    IPv6 communication
+    */
+    uint8 ipv6enabled;
+     /*
+     * Set to 1 to disable udp support. (default: 0)
+     * This will force Tox to use TCP only which may slow things down.
+     * Disabling udp support is necessary when using anonymous proxies or Tor.
+     */
+    uint8 udp_disabled;
+    /* Enable proxy support. (only basic TCP socks5 proxy currently supported.) (default: 0 (disabled))*/
+    uint8 proxy_enabled;
+    /* Proxy ip or domain in NULL terminated string format. */
+    char proxy_address[256];
+    /* Proxy port: in host byte order. */
+    uint16 proxy_port;
   }
 
   [CCode (cname = "Tox", free_function = "tox_kill", cprefix = "tox_", has_type_id = false)]
@@ -106,7 +139,7 @@ namespace Tox {
      *  return 0 if there are problems.
      */
     [CCode (cname = "tox_new")]
-    public Tox(uint8 ipv6enabled);
+    public Tox(Options? options = null);
 
     /*  return TOX_FRIEND_ADDRESS_SIZE byte address to give to others.
      * format: [client_id (32 bytes)][nospam number (4 bytes)][checksum (2 bytes)]
@@ -139,7 +172,7 @@ namespace Tox {
 
     /* return the friend id associated to that client id.
         return -1 if no such friend */
-    public int32 tox_get_friend_number([CCode(array_length=false)] uint8[] client_id);
+    public int32 get_friend_number([CCode(array_length=false)] uint8[] client_id);
 
     /* Copies the public key associated to that friend id into client_id buffer.
      * Make sure that client_id is of size CLIENT_ID_SIZE.
@@ -171,28 +204,36 @@ namespace Tox {
      public int friend_exists(int32 friendnumber);
 
     /* Send a text chat message to an online friend.
-     *
-     *  return the message id if packet was successfully put into the send queue.
-     *  return 0 if it was not.
-     *
-     * You will want to retain the return value, it will be passed to your read receipt callback
-     * if one is received.
-     * m_sendmessage_withid will send a message with the id of your choosing,
-     * however we can generate an id for you by calling plain m_sendmessage.
-     */
+    *
+    * return the message id if packet was successfully put into the send queue.
+    * return 0 if it was not.
+    *
+    * maximum length of messages is TOX_MAX_MESSAGE_LENGTH, your client must split larger messages
+    * or else sending them will not work. No the core will not split messages for you because that
+    * requires me to parse UTF-8.
+    *
+    * You will want to retain the return value, it will be passed to your read_receipt callback
+    * if one is received.
+    * m_sendmessage_withid will send a message with the id of your choosing,
+    * however we can generate an id for you by calling plain m_sendmessage.
+    */
     public uint32 send_message(int32 friendnumber, [CCode(array_length_type="guint32")] uint8[] message);
     public uint32 send_message_withid(int32 friendnumber, uint32 theid, [CCode(array_length_type="guint32")] uint8[] message);
 
     /* Send an action to an online friend.
-     *
-     *  return the message id if packet was successfully put into the send queue.
-     *  return 0 if it was not.
-     *
-     *  You will want to retain the return value, it will be passed to your read_receipt callback
-     *  if one is received.
-     *  m_sendaction_withid will send an action message with the id of your choosing,
-     *  however we can generate an id for you by calling plain m_sendaction.
-     */
+    *
+    * return the message id if packet was successfully put into the send queue.
+    * return 0 if it was not.
+    *
+    * maximum length of actions is TOX_MAX_MESSAGE_LENGTH, your client must split larger actions
+    * or else sending them will not work. No the core will not split actions for you because that
+    * requires me to parse UTF-8.
+    *
+    * You will want to retain the return value, it will be passed to your read_receipt callback
+    * if one is received.
+    * m_sendaction_withid will send an action message with the id of your choosing,
+    * however we can generate an id for you by calling plain m_sendaction.
+    */
     public uint32 send_action(int32 friendnumber, [CCode(array_length_type="guint32")] uint8[] action);
     public uint32 send_action_withid(int32 friendnumber, uint32 action_id, [CCode(array_length_type="guint32")] uint8[] action);
 
@@ -207,13 +248,13 @@ namespace Tox {
     public int set_name([CCode(array_length_type="guint16")] uint8[] name);
 
     /*
-     * Get your nickname.
-     * m - The messanger context to use.
-     * name - needs to be a valid memory location with a size of at least MAX_NAME_LENGTH (128) bytes.
-     *
-     *  return length of name.
-     *  return 0 on error.
-     */
+    * Get your nickname.
+    * m - The messenger context to use.
+    * name - needs to be a valid memory location with a size of at least MAX_NAME_LENGTH (128) bytes.
+    *
+    * return length of name.
+    * return 0 on error.
+    */
     public uint16 get_self_name([CCode(array_length=false)] uint8[] name);
 
     /* Get name of friendnumber and put it in name.
@@ -282,7 +323,7 @@ namespace Tox {
      * returns 0 if friend is not typing.
      * returns 1 if friend is typing.
      */
-    public int get_is_typing(int32 friendnumber);
+    public uint8 get_is_typing(int32 friendnumber);
 
     /* Sets whether we send read receipts for friendnumber.
      * This function is not lazy, and it will fail if yesno is not (0 or 1).
@@ -343,9 +384,9 @@ namespace Tox {
     public void callback_user_status(UserStatusCallback callback);
 
     /* Set the callback for typing changes.
-     *  function (int friendnumber, int is_typing)
+     *  function (int friendnumber, uint8_t is_typing)
      */
-    public delegate void TypingChangeCallback(Tox tox, int32 friendnumber, int is_typing);
+    public delegate void TypingChangeCallback(Tox tox, int32 friendnumber, uint8 is_typing);
     public void callback_typing_change(TypingChangeCallback callback);
 
     /* Set the callback for read receipts.
@@ -374,14 +415,24 @@ namespace Tox {
     public delegate void ConnectionStatusCallback(Tox tox, int32 friend_number, uint8 status);
     public void callback_connection_status(ConnectionStatusCallback callback);
 
+    /**********ADVANCED FUNCTIONS (If you don't know what they do you can safely ignore them.) ************/
+
+    /* Functions to get/set the nospam part of the id.
+    */
+    public uint32 nospam {
+      [CCode(cname="tox_get_nospam")] get;
+      [CCode(cname="tox_set_nospam")] set;
+    }
 
     /**********GROUP CHAT FUNCTIONS: WARNING WILL BREAK A LOT************/
 
     /* Set the callback for group invites.
      *
-     *  Function(Tox *tox, int friendnumber, uint8_t *group_public_key, void *userdata)
+     *  Function(Tox *tox, int32_t friendnumber, uint8_t *data, uint16_t length, void *userdata)
+     *
+     * data of length is what needs to be passed to join_groupchat().
      */
-    public delegate void GroupInviteCallback(Tox tox, int32 friendnumber, [CCode(array_length=false)] uint8[] group_public_key);
+    public delegate void GroupInviteCallback(Tox tox, int32 friendnumber, [CCode(array_length_type="guint16")] uint8[] group_public_key);
     public void callback_group_invite(GroupInviteCallback callback);
 
     /* Set the callback for group messages.
@@ -434,24 +485,25 @@ namespace Tox {
      */
     public int invite_friend(int32 friendnumber, int groupnumber);
 
-    /* Join a group (you need to have been invited first.)
+    /* Join a group (you need to have been invited first.) using data of length obtained
+     * in the group invite callback.
      *
      * returns group number on success
      * returns -1 on failure.
      */
-    public int join_groupchat(int32 friendnumber, [CCode(array_length=false)] uint8[] friend_group_public_key);
+    public int join_groupchat(int32 friendnumber, [CCode(array_length_type="guint16")] uint8[] friend_group_public_key);
 
     /* send a group message
      * return 0 on success
      * return -1 on failure
      */
-    public int group_message_send(int groupnumber, [CCode(array_length_type="guint32")] uint8[] message);
+    public int group_message_send(int groupnumber, [CCode(array_length_type="guint16")] uint8[] message);
     
     /* send a group action
      * return 0 on success
      * return -1 on failure
      */
-    public int group_action_send(int groupnumber, [CCode(array_length_type="guint32")] uint8[] action);
+    public int group_action_send(int groupnumber, [CCode(array_length_type="guint16")] uint8[] action);
 
     /* Return the number of peers in the group chat on success.
      * return -1 on failure
@@ -483,7 +535,139 @@ namespace Tox {
      */
     public uint32 get_chatlist([CCode(array_length_type="guint32")] int[] out_list);
 
-    /******************END OF GROUP CHAT FUNCTIONS************************/
+    /****************AVATAR FUNCTIONS*****************/
+
+    /* Set the callback function for avatar information.
+     * This callback will be called when avatar information are received from friends. These events
+     * can arrive at anytime, but are usually received uppon connection and in reply of avatar
+     * information requests.
+     *
+     * Function format is:
+     *  function(Tox *tox, int32_t friendnumber, uint8_t format, uint8_t *hash, void *userdata)
+     *
+     * where 'format' is the avatar image format (see TOX_AVATAR_FORMAT) and 'hash' is the hash of
+     * the avatar data for caching purposes and it is exactly TOX_HASH_LENGTH long. If the image
+     * format is NONE, the hash is zeroed.
+     *
+     */
+    public delegate void AvatarInfoCallback(Tox tox, int32 friendnumber, AvatarFormat format, [CCode(array_length=false)] uint8[] hash);
+    public void callback_avatar_info(AvatarInfoCallback callback);
+
+
+    /* Set the callback function for avatar data.
+     * This callback will be called when the complete avatar data was correctly received from a
+     * friend. This only happens in reply of a avatar data request (see tox_request_avatar_data);
+     *
+     * Function format is:
+     *  function(Tox *tox, int32_t friendnumber, uint8_t format, uint8_t *hash, uint8_t *data, uint32_t datalen, void *userdata)
+     *
+     * where 'format' is the avatar image format (see TOX_AVATAR_FORMAT); 'hash' is the
+     * locally-calculated cryptographic hash of the avatar data and it is exactly
+     * TOX_HASH_LENGTH long; 'data' is the avatar image data and 'datalen' is the length
+     * of such data.
+     *
+     * If format is NONE, 'data' is NULL, 'datalen' is zero, and the hash is zeroed. The hash is
+     * always validated locally with the function tox_hash and ensured to match the image data,
+     * so this value can be safely used to compare with cached avatars.
+     *
+     * WARNING: users MUST treat all avatar image data received from another peer as untrusted and
+     * potentially malicious. The library only ensures that the data which arrived is the same the
+     * other user sent, and does not interpret or validate any image data.
+     */
+    public delegate void AvatarDataCallback(Tox tox, int32 friendnumber, AvatarFormat format, [CCode(array_length=false)] uint8[] hash, [CCode(array_length_type="guint32")] uint8[] data);
+    public void callback_avatar_data(AvatarDataCallback callback);
+
+    /* Set the user avatar image data.
+     * This should be made before connecting, so we will not announce that the user have no avatar
+     * before setting and announcing a new one, forcing the peers to re-download it.
+     *
+     * Notice that the library treats the image as raw data and does not interpret it by any way.
+     *
+     * Arguments:
+     *  format - Avatar image format or NONE for user with no avatar (see TOX_AVATAR_FORMAT);
+     *  data - pointer to the avatar data (may be NULL it the format is NONE);
+     *  length - length of image data. Must be <= TOX_AVATAR_MAX_DATA_LENGTH.
+     *
+     * returns 0 on success
+     * returns -1 on failure.
+     */
+    public int set_avatar(AvatarFormat format, [CCode(array_length_type="guint32")] uint8[] data);
+
+    /* Unsets the user avatar.
+     *
+     * returns 0 on success (currently always returns 0)
+     */
+    public int unset_avatar();
+
+    /* Get avatar data from the current user.
+     * Copies the current user avatar data to the destination buffer and sets the image format
+     * accordingly.
+     *
+     * If the avatar format is NONE, the buffer 'buf' isleft uninitialized, 'hash' is zeroed, and
+     * 'length' is set to zero.
+     *
+     * If any of the pointers format, buf, length, and hash are NULL, that particular field will be ignored.
+     *
+     * Arguments:
+     *   format - destination pointer to the avatar image format (see TOX_AVATAR_FORMAT);
+     *   buf - destination buffer to the image data. Must have at least 'maxlen' bytes;
+     *   length - destination pointer to the image data length;
+     *   maxlen - length of the destination buffer 'buf';
+     *   hash - destination pointer to the avatar hash (it must be exactly TOX_HASH_LENGTH bytes long).
+     *
+     * returns 0 on success;
+     * returns -1 on failure.
+     *
+     */
+    public int get_self_avatar(ref AvatarFormat format, [CCode(array_length=false)] uint8[] buf, ref uint32 length, uint32 maxlen, [CCode(array_length=false)] uint8[] hash);
+
+
+    /* Generates a cryptographic hash of the given data.
+     * This function may be used by clients for any purpose, but is provided primarily for
+     * validating cached avatars. This use is highly recommended to avoid unnecessary avatar
+     * updates.
+     * This function is a wrapper to internal message-digest functions.
+     *
+     * Arguments:
+     *  hash - destination buffer for the hash data, it must be exactly TOX_HASH_LENGTH bytes long.
+     *  data - data to be hashed;
+     *  datalen - length of the data; for avatars, should be TOX_AVATAR_MAX_DATA_LENGTH
+     *
+     * returns 0 on success
+     * returns -1 on failure.
+     */
+    public static int hash([CCode(array_length=false)] uint8[] hash, [CCode(array_length_type="guint32")] uint8[] data);
+
+    /* Request avatar information from a friend.
+     * Asks a friend to provide their avatar information (image format and hash). The friend may
+     * or may not answer this request and, if answered, the information will be provided through
+     * the callback 'avatar_info'.
+     *
+     * returns 0 on success
+     * returns -1 on failure.
+     */
+    public int request_avatar_info(int32 friendnumber);
+
+    /* Send an unrequested avatar information to a friend.
+     * Sends our avatar format and hash to a friend; he/she can use this information to validate
+     * an avatar from the cache and may (or not) reply with an avatar data request.
+     *
+     * Notice: it is NOT necessary to send these notification after changing the avatar or
+     * connecting. The library already does this.
+     *
+     * returns 0 on success
+     * returns -1 on failure.
+     */
+    public int send_avatar_info(int32 friendnumber);
+
+    /* Request the avatar data from a friend.
+     * Ask a friend to send their avatar data. The friend may or may not answer this request and,
+     * if answered, the information will be provided in callback 'avatar_data'.
+     *
+     * returns 0 on sucess
+     * returns -1 on failure.
+     */
+    public int request_avatar_data(int32 friendnumber);
 
     /****************FILE SENDING FUNCTIONS*****************/
     /* NOTE: This how to will be updated.
@@ -598,8 +782,7 @@ namespace Tox {
      *  returns 1 if the address could be converted into an IP address
      *  returns 0 otherwise
      */
-    public int bootstrap_from_address(string address, uint8 ipv6enabled,
-                   uint16 port,[CCode(array_length=false)] uint8[] public_key);
+    public int bootstrap_from_address(string address, uint16 port, [CCode(array_length=false)] uint8[] public_key);
 
     /*  return 0 if we are not connected to the DHT.
      *  return 1 if we are.
@@ -611,41 +794,15 @@ namespace Tox {
      * Free all datastructures. */
     //void tox_kill(Tox *tox);
 
+    /* Return the time in milliseconds before tox_do() should be called again
+    * for optimal performance.
+    *
+    * returns time (in ms) before the next tox_do() needs to be run on success.
+    */
+    public uint32 do_interval();
 
     /* the main loop that needs to be run at least 20 times per second */
     public void do();
-    
-    /*
-     * tox_wait_prepare(): function should be called under lock
-     * Prepares the data required to call tox_wait_execute() asynchronously
-     *
-     * data[] is reserved and kept by the caller
-     * len is in/out: in = reserved data[], out = required data[]
-     *
-     *  returns 1 on success
-     *  returns 0 on failure (length is insufficient)
-     */
-    public int wait_prepare([CCode(array_length=false)]out uint8[] data, ref uint16 lenptr);
-
-    /* tox_wait_execute(): function can be called asynchronously
-     * Waits for something to happen on the socket for up to milliseconds milliseconds.
-     * *** Function MUSTN'T poll. ***
-     * The function mustn't modify anything at all, so it can be called completely
-     * asynchronously without any worry.
-     *
-     *  returns  1 if there is socket activity (i.e. tox_do() should be called)
-     *  returns  0 if the timeout was reached
-     *  returns -1 if data was NULL or len too short
-     */
-    public int wait_execute([CCode(array_length_type="guint16")]uint8[] data, uint16 milliseconds);
-
-    /* tox_wait_cleanup(): function should be called under lock
-     * Stores results from tox_wait_execute().
-     *
-     * data[]/len shall be the exact same as given to tox_wait_execute()
-     *
-     */
-    public void wait_cleanup([CCode(array_length_type="guint16")]uint8[] data);
 
     /* SAVING AND LOADING FUNCTIONS: */
 
@@ -655,7 +812,15 @@ namespace Tox {
     /* Save the messenger in data (must be allocated memory of size Messenger_size()). */
     public void save([CCode(array_length=false)] uint8[] data);
 
-    /* Load the messenger from data of size length. */
+    /* Load the messenger from data of size length.
+     * NOTE: The Tox save format isn't stable yet meaning this function sometimes
+     * returns -1 when loading older saves. This however does not mean nothing was
+     * loaded from the save.
+     *
+     *  returns 0 on success
+     *  returns -1 on failure
+     *  returns +1 on finding encrypted save data
+     */
     public int load([CCode(array_length_type = "guint32")] uint8[] data);
   }
 }

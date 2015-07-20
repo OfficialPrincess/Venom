@@ -16,35 +16,46 @@ Dependencies
 
 Additionally to the tox build dependencies, you will need:
 
-| Package name     | Version   |
-|------------------|-----------|
-| valac            | >= 0.18.1 |
-| cmake            | >=2.8.7   |
-| libgtk-3-dev     | >=3.4     |
-| libjson-glib-dev | >=0.14    |
-| libsqlite3-dev   | >=3.7     |
+| Package name     | Version   | Comment        |
+|------------------|-----------|----------------|
+| valac            | >=0.18.1  |                |
+| cmake            | >=2.8.7   |                |
+| libgtk-3-dev     | >=3.4     |                |
+| libjson-glib-dev | >=0.14    |                |
+| libsqlite3-dev   | >=3.7     |                |
+| libnotify-dev    | >=0.7.3   | optional, *nix |
+| libqrencode-dev  | >=3.1.1   | optional, *nix |
+| djbdns           | ?         | optional, *nix |
 
 
 Ubuntu >= 12.10 (Quantal Quetzal) / Linux Mint / Debian:
 
-    apt-get install valac cmake libgtk-3-dev libjson-glib-dev libsqlite3-dev
+    apt-get install valac cmake libgtk-3-dev libjson-glib-dev libsqlite3-dev libqrencode-dev libnotify-dev
 
-Ubuntu 12.04 (Precise Pangolin): (needs a ppa to get a newer version of valac)
+Ubuntu 12.04 (Precise Pangolin): (needs a ppa to get a newer version of valac as well as djbdns for dns resolution)
 
     apt-add-repository ppa:vala-team/ppa
     apt-get update
-    apt-get install valac cmake libgtk-3-dev libjson-glib-dev libsqlite3-dev
+    apt-get install valac cmake libgtk-3-dev libjson-glib-dev libsqlite3-dev libqrencode-dev libnotify-dev
 
 Fedora:
 
-    yum install vala cmake gtk3-devel json-glib-devel sqlite-devel
+    yum install vala cmake gtk3-devel json-glib-devel sqlite-devel qrencode-devel libnotify-devel
 
 Arch Linux: (There is an [aur-package](https://aur.archlinux.org/packages/venom-git))
 
-    pacman -S vala cmake gtk3 json-glib sqlite
+    pacman -S vala cmake gtk3 json-glib sqlite qrencode libnotify
 
 Building and installing Venom
 -----------------------------
+
+If your version of glib is smaller than 2.34, you will need djbdns to resolve dns entries:
+
+    wget http://cr.yp.to/djbdns/djbdns-1.05.tar.gz
+    tar -xzf djbdns-1.05.tar.gz
+    cd djbdns-1.05
+    echo gcc -O2 -include /usr/include/errno.h > conf-cc
+    make
 
 After you installed the dependencies, clone, build and install venom:
 
@@ -52,7 +63,10 @@ After you installed the dependencies, clone, build and install venom:
     cd Venom
     mkdir build
     cd build
+    # For glib >= 2.34
     cmake ..
+    # or for glib 2.32
+    cmake -DDJBDNS_DIRECTORY="<path-to-djbdns>" ..
     make
     sudo make install
 

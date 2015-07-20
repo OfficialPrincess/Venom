@@ -22,7 +22,7 @@
 namespace Venom {
   public class SearchEntry : Gtk.Entry {
     public SearchEntry() {
-      primary_icon_name = "edit-find";
+      primary_icon_name = "edit-find-symbolic";
       margin = 6;
     }
   }

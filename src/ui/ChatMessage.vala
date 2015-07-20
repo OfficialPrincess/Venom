@@ -23,7 +23,7 @@ namespace Venom {
     private Gtk.Label message_label;
     private Gtk.Label date_label;
 
-    public ChatMessage(IMessage message, bool short_names, bool following){
+    public ChatMessage(IMessage message, bool short_names, bool following, int offset){
       init_widgets();
 
       if( message.is_action ) {
@@ -39,10 +39,17 @@ namespace Venom {
         }
       } else {
         name_label.set_text("");
+        name_label.set_size_request(offset, -1);
       }
-      string markup_message_text = markup_uris(Markup.escape_text(message.get_message_plain()));
+      string markup_message_text = Tools.markup_uris(message.get_message_plain());
       message_label.set_markup( markup_message_text );
       date_label.set_text( message.get_time_plain() );
+    }
+
+    public int get_name_label_width() {
+      Gtk.Requisition req;
+      name_label.get_preferred_size(null, out req);
+      return req.width;
     }
 
     private void init_widgets() {
@@ -64,17 +71,5 @@ namespace Venom {
       this.pack_start(message_label, false);
       this.pack_end(date_label, false);
     }
-
-    private string markup_uris(string text) {
-      string ret;
-      try {
-        ret = Tools.uri_regex.replace(text, -1, 0, "<a href=\"\\g<u>\">\\g<u></a>");
-		  } catch (GLib.RegexError e) {
-			  stderr.printf("Error when doing uri markup: %s", e.message);
-			  return text;
-		  }
-		  return ret;
-    }
-
   }
 }
